@@ -8,7 +8,9 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, CosineAnnealingW
 from torch.utils.data import Dataset, DataLoader
 from torch import nn
 import matplotlib.pyplot as plt
+import pandas as pd 
 import numpy as np
+import random
 import RnnModel
 import Pipeline
 import os
@@ -18,7 +20,7 @@ from datetime import datetime
 # from Intergration import Deadreckoning, Error_state, Error_state_8, Error_state_8_LS
 # %matplotlib widget
 
-os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Choose GPU core
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4,5,6,7,8"  # Choose GPU core
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 torch.manual_seed(3)  # make experiment repeatable
 # =============================================================================
@@ -53,45 +55,72 @@ currt_folder = os.getcwd()
 #GIVE_real_data_0316_60s
 # simudata_Errorfree_3d_10hz
 
-dataset_type = 'GIVE_real_data_0316.mat'
+data_paths = [currt_folder + '/data/' + 'Simu_MEMS_cut.csv',
+              ]
+
 indx_MB = True
 
 # 
-operation = 'TRAIN'
- 
-# operation = 'TEST'
-# in_model = '0825_MEMS_withgrad_shuffle_lstm111_1000_pvab_lkrelu_alltorchnorm_m2m_withifimuatt0101_loss123'
-# %matplotlib widget
+# operation = 'TRAIN'
+  
+operation = 'TEST'
+in_model = '0209_MEMS_withgrad_shuffle_gnssgap_10lstm1525_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_'
+%matplotlib widget
 
 # operation = 'TRAIN_USEOLD'
-# in_model = '0824_MEMS_withgrad_shuffle_gnssgap_lstm111_200_pvab_lkrelu_alltorchnorm_m2m_newf5_noifimuatt01001noscale_loss123'
-# out_model = '0824_MEMS_withgrad_shuffle_gnssgap_lstm111_200_pvab_lkrelu_alltorchnorm_m2m_newf5_noifimuatt01001noscale_loss123_1'
+# in_model = '0212_MEMS_withgrad_shuffle_gnssgap_10lstm1105_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_valoss'
+# out_model = '0212_MEMS_withgrad_shuffle_gnssgap_10lstm1105_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_valoss1'
 
+# operation = 'MB_Only'
 
-nograd_sd = False # True: with torch.no_grad, nograd    False: none, withgrad
+nograd_sd = True # True: with torch.no_grad, nograd    False: none, withgrad
 idx_shuffle = True
-indx_add_measerr = False
-indx_train_gnssgap = False
 
-idx_lossweight_coeff = ['1','1','1']
 
-idx_ifimu = True
+# out_mat_file = "data/bias_pv_" + str(pos_add_error_gnss) +'_' + str(vel_add_error_gnss) + ".mat"
+
+indx_train_gnssgap = True
+gnssgap = 5 # every 5 seconds
+
+idx_ifimu = False
 idx_ifatt = False
-idx_imu_scale = ['0.1','0.01']
-idx_att_scale = '0.001'
+idx_imu_scale = ['0.1','0.1']
+idx_att_scale = '0.0001'
 
 idx_feedback_type = 'pvab'
 # idx_feedback_type = 'pvb'
 
+idx_other_settings = ''
+
 
 # idx_other_settings = '_feedavpb_lkrelu_alltorchnorm_m2m_noifimuatt0101'
-idx_other_settings = '_m2m_loss123'
+# idx_other_settings = '_m2m_loss123_' + str(pos_add_error_gnss) +'_' + str(vel_add_error_gnss)
+idx_lossweight_coeff = ['1','10','5']
+
+tarj_length = 90
+target_Fs = 50
+
+
+save_to_matlab = True
+if operation == 'TEST':
+    out_mat_file = "data/" + in_model + ".mat"
 
 
 idx_train_batch_size = 20
-idx_cut_test_traj = 1
 
-input_dim = 9 + 9 + 6 + 6 
+
+fs_GT = 100
+fs_GNSS = 1
+fs_IMU = 100
+
+GT_samp = int(fs_GT/target_Fs)
+IMU_samp = int(fs_IMU/target_Fs)
+Fs = target_Fs  # IMU freq
+Fs_meas = fs_GNSS  # range meas freq
+
+
+
+input_dim = 6 + 6 + 9 + 9
 # input_dim = 6+ 6 + 6
 
 hidden_dim =256
@@ -103,52 +132,45 @@ droupout_rate = 0
 recurrent_kind = 'lstm'  # 'rnn' 'gru' 'lstm'
 
 
-idx_num_epochs = 100
-idx_learning_rate =1e-4
-idx_weight_decay = 1e-8
+idx_num_epochs = 200
+idx_learning_rate =1e-3
+idx_weight_decay = 0
 scheduler = "cosine_annealing 500"
 # scheduler = "step 100 0.1"
 
 # scheduler = "None"
 
 
-# =============================================================================
+opti_type = 'Adam' 
+# opti_type = 'SGD'
 
-data_path = currt_folder + '/data/' + dataset_type
+
+
+
+
+
+# =============================================================================
 
 
 if operation == 'TRAIN':
 
-    if 'bias' in data_path:
+    if 'bias' in data_paths[0]:
         idx_dataset_type = '_bias'
-    elif 'MEMS' in data_path:
+    elif 'MEMS' in data_paths[0]:
         idx_dataset_type = '_MEMS'
-    elif 'real' in data_path:
-        idx_dataset_type = '_real'
-    elif 'bias_White' in data_path:
-        idx_dataset_type = '_bias_White'
-    elif 'Errorfree' in data_path:
-        idx_dataset_type = '_Errorfree'
-    elif '60s' in data_path:
-        idx_dataset_type = '_real_60s'
-    
+
 
     if nograd_sd == False:
         idx_dr_grad = '_withgrad_'
     else:
-        idx_dr_grad = '_nograd_'
+        idx_dr_grad = '_nograd_'    
     if idx_shuffle == False:
         idx_shuffle_str = '_'
     else:
         idx_shuffle_str = 'shuffle_'
 
-    if indx_add_measerr == True:
-        idx_add_err = 'add_measerr'
-    else:
-        idx_add_err = ''
-
     if indx_train_gnssgap:
-        inx_train_gnssgap = 'gnssgap_'
+        inx_train_gnssgap = 'gnssgap_' + str(gnssgap)
     else:
         inx_train_gnssgap = ''
 
@@ -173,7 +195,7 @@ if operation == 'TRAIN':
 
 
     idx_lossweight_coeff_str = ''.join(idx_lossweight_coeff)    
-    out_model = today_date + idx_dataset_type + idx_dr_grad + idx_shuffle_str + inx_train_gnssgap + idx_add_err + recurrent_kind + idx_lossweight_coeff_str + '_' + str(idx_num_epochs) + '_' + idx_feedback_type + '_' +  idx_ifimu_str + idx_imu_scale_str + idx_ifatt_str + idx_att_scale_str + idx_other_settings
+    out_model = today_date  + idx_dataset_type + idx_dr_grad + idx_shuffle_str + inx_train_gnssgap + recurrent_kind + idx_lossweight_coeff_str + '_' + str(idx_num_epochs) + '_' + idx_feedback_type + '_' +  idx_ifimu_str + idx_imu_scale_str + idx_ifatt_str + idx_att_scale_str + '_' + str(target_Fs) + 'Hz_Trajlength' + str(tarj_length) + '_' + idx_other_settings
     out_model_path = currt_folder + '/model/' + out_model + '.pt'
 
     LoadModel = False
@@ -198,57 +220,139 @@ elif operation == 'TRAIN_USEOLD':
     SaveModel = True
     out_model_path = currt_folder + '/model/' + out_model + '.pt'
 
+
+elif operation == 'MB_Only':
+
+    LoadModel = False
+    TrainModel = False
+    SaveModel = False 
+
 # =============================================================================
 
-data = scio.loadmat(data_path)
-dataset = data["dataset"]
 
 
-pos_meas =  torch.from_numpy(dataset[0, 0]["pos_meas_ecef"].astype(datatype))
-vel_meas =  torch.from_numpy(dataset[0, 0]["vel_meas_ecef"].astype(datatype))
+def get_batch(data, data_fs, tarj_length):
+    num_batches = int(data.shape[0] / data_fs // tarj_length)
+    data_trimmed  = data[:num_batches*tarj_length*data_fs,:]
+    return data_trimmed.reshape(num_batches,tarj_length*data_fs,data.shape[1])
 
-if indx_add_measerr:
-    if 'simu' in data_path:
-        manual_error_pos = torch.rand((pos_meas.shape[0],pos_meas.shape[1],pos_meas.shape[2])) * 2
-        manual_error_vel = torch.rand((pos_meas.shape[0],pos_meas.shape[1],pos_meas.shape[2]))
-        pos_meas = pos_meas + manual_error_pos
-        vel_meas = vel_meas + manual_error_vel
-
-# data = scio.loadmat("data/8020_8shape_10hz_100s_bias_randw_mis.mat")
-# # data = scio.loadmat("data/8020_8shape_10hz_100s_bias_randw_mis.mat")
-
-# dataset = data["dataset"]
-
-Fs = int(dataset[0, 0]["Fs"])  # IMU freq
-Fs_meas = int(dataset[0, 0]["Fs_range"])  # range meas freq
-tarj_length = int(dataset[0, 0]["tarj_length"])
-train_num = int(dataset[0, 0]["train_num"]) + 1
-test_num = int(dataset[0, 0]["test_num"])
-
-time_traj = torch.from_numpy(dataset[0, 0]["time_traj_real"]).float()
-position_ecef = torch.from_numpy(dataset[0, 0]["position_ecef"].astype(datatype))
-velocity_ecef = torch.from_numpy(dataset[0, 0]["velocity_ecef"].astype(datatype))
-position_ned = torch.from_numpy(dataset[0, 0]["position_ned"].astype(datatype))
-velocity_ned = torch.from_numpy(dataset[0, 0]["velocity_ned"].astype(datatype))
-
-position_llh = torch.from_numpy(dataset[0, 0]["position_llh"].astype(datatype))
+def average_every_Fs(input_tensor,Fs_sample):
+    averages = []
+    for j in range(input_tensor.shape[1]):
+        averages.append([])
+        for i in range(0, input_tensor.shape[0], Fs_sample):
+            subset = input_tensor[i:i+Fs_sample,j]
+            avg = torch.mean(subset)  # 转换为浮点型并计算平均值
+            averages[j].append(avg)
+        averages[j] = torch.stack(averages[j],dim=0)
+    return torch.stack(averages).T
 
 
+def read_multidata(data_paths, Fs_meas, Fs, tarj_length):
 
 
-acceleration = torch.from_numpy(dataset[0, 0]["acceleration"].astype(datatype))
-# orientation_euler = torch.from_numpy(dataset[0, 0]["orientation_euler"]).float()
-orientation_euler_rad = torch.from_numpy(dataset[0, 0]["orientation_euler_rad"].astype(datatype))
+    pos_meas = []
+    vel_meas = []
+    position_ecef = []
+    velocity_ecef = []
+    position_ned = []
+    velocity_ned = []
+    position_llh = []
+    orientation_euler_rad = []
+    orientation_euler_rad = []
+    accbody = []
+    angularVelocity = []
+    for data_path in data_paths:
+        # Adjust the read_csv parameters based on your file format and structure
+        df = pd.read_csv(data_path)
+        
 
-accbody = torch.from_numpy(dataset[0, 0]["acc_meas"].astype(datatype))
-angularVelocity = torch.from_numpy(dataset[0, 0]["angularv_meas"].astype(datatype))
+        # GT (ADMA)
+        pos_llh_GT = torch.tensor(df.loc[::GT_samp,['LatRadian','LonRadian','HeightMeters']].dropna().values)
+        pos_ecef_GT = torch.tensor(df.loc[::GT_samp,['ECEF_x1','ECEF_y1', 'ECEF_z1']].dropna().values)
+        vel_ecef_GT = torch.tensor(df.loc[::GT_samp,['Velocity_X_ECEF_GT','Velocity_Y_ECEF_GT','Velocity_Z_ECEF_GT']].dropna().values)
+        pos_ned_GT = torch.tensor(df.loc[::GT_samp,['xNorth_GT','yEast_GT','zDown_GT']].dropna().values)
+        vel_ned_GT = torch.tensor(df.loc[::GT_samp,['Velocity_N','Velocity_E','Velocity_D']].dropna().values)
+        # imu_GT = torch.tensor(df.loc[::GT_samp,['GT_AccX','GT_AccY','GT_AccZ','GT_RateX','GT_RateY','GT_RateZ']].dropna().values)
+        #The rotation manner to be checked
+        att_GT = torch.tensor(df.loc[::GT_samp,['RollRad','PitchRad','YawRad']].dropna().values)
+        # ATT From ENU RFU --- NED FRD
+        # att_GT[:,2] = torch.pi /2 - att_GT[:,2]
+
+        # att_GT[:, 2] = att_GT[:, 2] + 2 * torch.pi * (att_GT[:, 2] < -torch.pi)
+
+
+        # GNSS
+        pos_ecef_GNSS = torch.tensor(df.loc[:,['ECEF_x2','ECEF_y2','ECEF_z2']].dropna().values)
+        vel_ecef_GNSS = torch.tensor(df.loc[:,['Velocity_X_ECEF_GNSS','Velocity_Y_ECEF_GNSS','Velocity_Z_ECEF_GNSS']].dropna().values)
+        # IMU
+        # imu_BNO_PP = torch.tensor(df.loc[::IMU_samp,['LinearX_BNO_Postprocess','LinearY_BNO_Postprocess','LinearZ_BNO_Postprocess','GyroX_BNO_Postprocess', 'GyroY_BNO_Postprocess', 'GyroZ_BNO_Postprocess',]].dropna().values)
+        # imu_BNO_PP[:,[1,2,4,5]] = -imu_BNO_PP[:,[1,2,4,5]]
+        
+        # imu_LSM_PP = torch.tensor(df.loc[::IMU_samp,['LinearX_LSM_Postprocess','LinearY_LSM_Postprocess','LinearZ_LSM_Postprocess','GyroX_LSM_Postprocess', 'GyroY_LSM_Postprocess', 'GyroZ_LSM_Postprocess',]].dropna().values)
+        # imu_LSM_PP[:,[1,2,4,5]] = -imu_LSM_PP[:,[1,2,4,5]]
+        # imu_FXOS_PP = torch.tensor(df.loc[::IMU_samp,['LinearX_FXOS_Postprocess','LinearY_FXOS_Postprocess','LinearZ_FXOS_Postprocess','GyroX_FXAS_Postprocess', 'GyroY_FXAS_Postprocess', 'GyroZ_FXAS_Postprocess',]].dropna().values)
+        # imu_FXOS_PP[:,[1,2,4,5]] = -imu_FXOS_PP[:,[1,2,4,5]]
+
+
+        # imu_BNO_RAW = torch.tensor(df.loc[::IMU_samp,['LinearX_BNO_Raw','LinearY_BNO_Raw','LinearZ_BNO_Raw','GyroX_BNO_Raw', 'GyroY_BNO_Raw', 'GyroZ_BNO_Raw',]].dropna().values)
+        # imu_BNO_RAW[:,[1,2,4,5]] = -imu_BNO_RAW[:,[1,2,4,5]]
+        # imu_LSM_RAW = torch.tensor(df.loc[::IMU_samp,['LinearX_LSM_Raw','LinearY_LSM_Raw','LinearZ_LSM_Raw','GyroX_LSM_Raw', 'GyroY_LSM_Raw', 'GyroZ_LSM_Raw',]].dropna().values)
+        # imu_LSM_RAW[:,[1,2,4,5]] = -imu_LSM_RAW[:,[1,2,4,5]]
+        # imu_FXOS_RAW = torch.tensor(df.loc[::IMU_samp,['LinearX_FXOS_Raw','LinearY_FXOS_Raw','LinearZ_FXOS_Raw','GyroX_FXAS_Raw', 'GyroY_FXAS_Raw', 'GyroZ_FXAS_Raw',]].dropna().values)
+        # imu_FXOS_RAW[:,[1,2,4,5]] = -imu_FXOS_RAW[:,[1,2,4,5]]
+
+        imu= torch.tensor(df.loc[::IMU_samp,['AccX_simu','AccY_simu','AccZ_simu','GyroX_simu','GyroY_simu','GyroZ_simu']].dropna().values)
+    
+
+        # imu= torch.tensor(df.loc[:,['AccX_simu','AccY_simu','AccZ_simu','GyroX_simu','GyroY_simu','GyroZ_simu']].dropna().values)
+        # imu = average_every_Fs(imu,IMU_samp)
+
+        pos_meas.append(get_batch(pos_ecef_GNSS, Fs_meas, tarj_length))
+        vel_meas.append(get_batch(vel_ecef_GNSS, Fs_meas, tarj_length))
+
+
+        # time_traj = torch.from_numpy(dataset[0, 0]["time_traj_real"]).float()
+        position_ecef.append(get_batch(pos_ecef_GT, Fs, tarj_length))
+        velocity_ecef.append(get_batch(vel_ecef_GT, Fs, tarj_length))
+        position_ned.append(get_batch(pos_ned_GT, Fs, tarj_length))
+        velocity_ned.append(get_batch(vel_ned_GT, Fs, tarj_length))
+        position_llh.append(get_batch(pos_llh_GT, Fs, tarj_length))
+
+        # orientation_euler = torch.from_numpy(dataset[0, 0]["orientation_euler"]).float()
+        orientation_euler_rad.append(get_batch(att_GT, Fs, tarj_length))
+
+        accbody.append(get_batch(imu[:,:3], Fs, tarj_length))
+        angularVelocity.append(get_batch(imu[:,3:], Fs, tarj_length))
+
+    pos_meas_cat = torch.cat(pos_meas, dim=0)
+    vel_meas_cat = torch.cat(vel_meas, dim=0)
+    position_ecef_cat = torch.cat(position_ecef, dim=0)
+    velocity_ecef_cat = torch.cat(velocity_ecef, dim=0)
+    position_ned_cat = torch.cat(position_ned, dim=0)
+    velocity_ned_cat = torch.cat(velocity_ned, dim=0)
+    position_llh_cat = torch.cat(position_llh, dim=0)
+    orientation_euler_rad_cat = torch.cat(orientation_euler_rad, dim=0)
+    accbody_cat = torch.cat(accbody, dim=0)
+    angularVelocity_cat = torch.cat(angularVelocity, dim=0)
+
+
+    return pos_meas_cat,vel_meas_cat,position_ecef_cat,velocity_ecef_cat,position_ned_cat, velocity_ned_cat,position_llh_cat,orientation_euler_rad_cat,orientation_euler_rad_cat,accbody_cat,angularVelocity_cat
+
+pos_meas,vel_meas,position_ecef,velocity_ecef,position_ned, velocity_ned,position_llh,orientation_euler_rad,orientation_euler_rad,accbody,angularVelocity = read_multidata(data_paths, Fs_meas, Fs, tarj_length)
+
+
+acceleration = torch.zeros(position_llh.shape[0],position_llh.shape[1],3)
+
+train_num = round(pos_meas.shape[0]*0.9)
+test_num = pos_meas.shape[0] - train_num
 
 att_ecef_euler_rad = torch.zeros(orientation_euler_rad.shape[0],orientation_euler_rad.shape[1],3)
 reshape_C_b_e = torch.zeros(orientation_euler_rad.shape[0],orientation_euler_rad.shape[1],9)
 for ii in range(orientation_euler_rad.shape[0]):
     for jj in range(orientation_euler_rad.shape[1]):
         est_C_b_n = functions.euler_to_CTM(orientation_euler_rad[ii,jj]).T
-        _,_,est_C_b_e= functions.geo_ned2ecef(position_llh[ii,jj], velocity_ned[ii,jj], est_C_b_n)
+        _,_,est_C_b_e= functions.geo_ned2ecef_0(position_llh[ii,jj], velocity_ned[ii,jj], est_C_b_n)
         att_ecef_euler_rad[ii,jj] = functions.CTM_to_euler(est_C_b_e.T)
         reshape_C_b_e[ii,jj] = est_C_b_e.reshape(9)
 # time_meas = torch.from_numpy(dataset[0, 0]["time_meas"]).float()
@@ -275,6 +379,15 @@ X = torch.cat((pos_meas, vel_meas), dim=2).to(dev)
 T = torch.cat((position_ecef, velocity_ecef, position_ned, velocity_ned, position_llh, acceleration, orientation_euler_rad, att_ecef_euler_rad, reshape_C_b_e), dim=2).to(dev)
 IMU = torch.cat((accbody, angularVelocity), dim=2).to(dev)
 IMU = IMU.reshape(IMU.shape[0], -1, Fs, 6)
+
+
+# shuffle
+idx_s = torch.randperm(X.shape[0])
+X = X[idx_s].view(X.size())
+T = T[idx_s].view(T.size())
+IMU = IMU[idx_s].view(IMU.size())
+
+
 # Circular Dataset
 # X = torch.from_numpy(np.load("data/rangemeas_circle.npy")).to(dev)
 # T = torch.from_numpy(np.load("data/trajectory_ref_circle.npy")).to(dev)
@@ -292,6 +405,13 @@ train_IMU = IMU[0 : int(train_num * train_val_splitter)].to(dev)
 train_targets = T[0 : int(train_num * train_val_splitter)].to(dev)
 # train_targets = T2[0:trainsets_num]
 
+########### Test long train traj
+# train_features = train_features.reshape(9,-1,6)
+# train_IMU = train_IMU.reshape(9,-1,10,6)
+# train_targets = train_targets.reshape(9,-1,33)
+
+
+
 val_features = X[int(train_num * train_val_splitter) : train_num].to(dev)
 val_IMU = IMU[int(train_num * train_val_splitter) : train_num].to(dev)
 val_targets = T[int(train_num * train_val_splitter) : train_num].to(dev)
@@ -300,7 +420,7 @@ val_targets = T[int(train_num * train_val_splitter) : train_num].to(dev)
 # val_targets = train_targets
 
 # 20s traj to test
-test_time_traj = time_traj[train_num:].to(dev)
+# test_time_traj = time_traj[train_num:].to(dev)
 test_features = X[train_num:].to(dev)
 test_IMU = IMU[train_num:].to(dev)
 test_targets = T[train_num:].to(dev)
@@ -314,7 +434,7 @@ test_targets = T[train_num:].to(dev)
 # test_targets = train_targets.reshape(indx_test,-1,33)
 
 
-# # Longer test traj
+# Longer test traj
 # indx_test = idx_cut_test_traj
 # # test_time_traj = test_time_traj.reshape(indx_test,-1)
 # test_features = test_features.reshape(indx_test,-1,6)
@@ -413,6 +533,7 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=1, shuffle=False)
 """est_KG"""
 
 net = RnnModel.LC_est_KG(
+    dev,
     input_dim,
     hidden_dim,
     n_layers,
@@ -427,6 +548,7 @@ net = RnnModel.LC_est_KG(
     idx_ifatt,
     idx_imu_scale,
     idx_att_scale,
+    idx_train_batch_size,
 )
 net.to(dev)
 
@@ -461,6 +583,7 @@ scheduler = "cosine_annealing 500"
 
 Trainer = Pipeline.Pipeline_LC(
     net,
+    dev,
     num_epochs=idx_num_epochs,
     learning_rate=idx_learning_rate,
     weight_decay=idx_weight_decay,
@@ -469,6 +592,8 @@ Trainer = Pipeline.Pipeline_LC(
     nograd = nograd_sd,
     lossweight_coeff = idx_lossweight_coeff,
     train_gnssgap = indx_train_gnssgap,
+    gnssgap = gnssgap,
+    opti_type = opti_type,
 )
 # use imu_time_interval = 1 for fast training, but increase error in dr, imu frequency is 100Hz, use all of it will be super slow
 # Change float32 to 64 is very imporant when use time interval smaller that 1s. Accuary of DR changes from 70 to 0.001!
@@ -488,7 +613,7 @@ if SaveModel:
 # todo: change to a test dataset
 # this is fine as long as we don't use the validation dataset (i.e. as a stopping criterion)
 # Change output to checklist to check several params
-est_traj_nn, ref_traj, bias_history, est_traj_nn_llh, ref_traj_llh= Trainer.test_lc(test_loader, test_dataset, Fs, Fs_meas)
+est_traj_nn, ref_traj, bias_history, est_traj_nn_llh, ref_traj_llh, predict_KG_net= Trainer.test_lc(test_loader, test_dataset, Fs, Fs_meas)
 
 # KGain = check_list_test[0].cpu().detach().numpy()
 # P = check_list_test[1].cpu().detach().numpy()
@@ -501,6 +626,21 @@ est_traj_nn, ref_traj, bias_history, est_traj_nn_llh, ref_traj_llh= Trainer.test
 #     for jj in range(est_traj_nn.shape[1]):
 #         est_C_b_e = functions.euler_to_CTM(est_traj_nn[ii,jj,6:]).T
 #         _,_,est_att_ned_euler_rad[ii,jj]= functions.ecef2geo_ned(est_traj_nn[ii,jj,:3], est_traj_nn[ii,jj,3:6], est_C_b_e)
+
+
+# # =============================================================================
+# #                           Re produce the Covariance
+# # =============================================================================
+
+# H = torch.zeros((6, 9))
+# H[0:3, 0:3] = -torch.eye(3)
+# H[3:6, 3:6] = -torch.eye(3)
+
+# predict_Cov_from_KG_net = functions.KG2COV(predict_KG_net, H)
+
+
+
+
 
 # =============================================================================
 #                              Position Accuracy
@@ -542,17 +682,8 @@ pprint(losses)
 
 if indx_MB:
 
-    if 'bias' in data_path:
-        MB_dataset_type = 'bias'
-    elif 'MEMS' in data_path:
-        MB_dataset_type = 'MEMS'
-    elif 'real' in data_path:
-        MB_dataset_type = 'real'
-    elif 'bias_White' in data_path:
-        MB_dataset_type = 'bias_White'
-
-
-    est_traj_nn_MB, ref_traj_MB, bias_history_MB, est_traj_nn_llh_MB, ref_traj_llh_MB= Trainer.GnssInsLooseCoupling(MB_dataset_type, test_loader, test_dataset, Fs, Fs_meas)
+    MB_dataset_type = 'real'
+    est_traj_nn_MB, ref_traj_MB, bias_history_MB, est_traj_nn_llh_MB, ref_traj_llh_MB, P_MB, KG_MB= Trainer.GnssInsLooseCoupling(MB_dataset_type, test_loader, test_dataset, Fs, Fs_meas)
 
 
     losses = {
@@ -576,11 +707,30 @@ if indx_MB:
 # =============================================================================
 
 est_traj_nn = est_traj_nn.detach().cpu().numpy()
+est_traj_nn_MB = est_traj_nn_MB.detach().cpu().numpy()
 ref_traj = ref_traj.detach().cpu().numpy()
 bias_history = bias_history.detach().cpu().numpy()
 est_traj_nn_llh = est_traj_nn_llh.numpy()
+est_traj_nn_llh_MB = est_traj_nn_llh_MB.numpy()
 ref_traj_llh = ref_traj_llh.numpy()
+predict_KG_net = predict_KG_net.detach().cpu().numpy()
+P_MB = P_MB.detach().cpu().numpy()
+KG_MB = KG_MB.detach().cpu().numpy()
 
+
+sumloss_p = 0
+sumloss_v = 0
+sumloss_p_MB = 0
+sumloss_v_MB = 0
+for i in range(est_traj_nn.shape[1]):
+    sumloss_p = sumloss_p + ((est_traj_nn[0,i,0] - ref_traj[0,i,0])**2 + (est_traj_nn[0,i,1] - ref_traj[0,i,1])**2 + (est_traj_nn[0,i,2] - ref_traj[0,i,2])**2)**0.5
+    sumloss_v = sumloss_v + ((est_traj_nn[0,i,3] - ref_traj[0,i,3])**2 + (est_traj_nn[0,i,4] - ref_traj[0,i,4])**2 + (est_traj_nn[0,i,5] - ref_traj[0,i,5])**2)**0.5
+    sumloss_p_MB = sumloss_p_MB + ((est_traj_nn_MB[0,i,0] - ref_traj[0,i,0])**2 + (est_traj_nn_MB[0,i,1] - ref_traj[0,i,1])**2 + (est_traj_nn_MB[0,i,2] - ref_traj[0,i,2])**2)**0.5
+    sumloss_v_MB = sumloss_v_MB + ((est_traj_nn_MB[0,i,3] - ref_traj[0,i,3])**2 + (est_traj_nn_MB[0,i,4] - ref_traj[0,i,4])**2 + (est_traj_nn_MB[0,i,5] - ref_traj[0,i,5])**2)**0.5
+meanloss_p = sumloss_p/est_traj_nn.shape[1]
+meanloss_v = sumloss_v/est_traj_nn.shape[1]
+sumloss_p_MB = sumloss_p_MB/est_traj_nn.shape[1]
+sumloss_v_MB = sumloss_v_MB/est_traj_nn.shape[1]
 
 # Pos LSTM
 plt.figure()
@@ -621,6 +771,12 @@ for k in range(ref_traj_llh.shape[0]):  # est_traj_nn.shape[0]):
     plt.plot(ref_traj[k, :, 21], "b", label="Reference x"  if k == 0 else None)
     plt.plot(ref_traj[k, :, 22], "b", label="Reference y"  if k == 0 else None)
     plt.plot(ref_traj[k, :, 23], "b", label="Reference z"  if k == 0 else None)
+    plt.plot(est_traj_nn[k, :, 6], "r", label="Net x"  if k == 0 else None)
+    plt.plot(est_traj_nn[k, :, 7], "r", label="Net y"  if k == 0 else None)
+    plt.plot(est_traj_nn[k, :, 8], "r", label="Net z"  if k == 0 else None)
+    plt.plot(est_traj_nn_MB[k, :, 6], "g", label="MB"  if k == 0 else None)
+    plt.plot(est_traj_nn_MB[k, :, 7], "g", label="MB"  if k == 0 else None)
+    plt.plot(est_traj_nn_MB[k, :, 8], "g", label="MB"  if k == 0 else None)
 
 plt.legend()
 
@@ -630,14 +786,27 @@ plt.legend()
 
 plt.figure()
 plt.grid()
-plt.title("Attitude")
+plt.title("Velocity")
 for k in range(ref_traj_llh.shape[0]):  # est_traj_nn.shape[0]):
-    plt.plot(est_traj_nn[k, :, 6], "r", label="Net x"  if k == 0 else None)
-    plt.plot(est_traj_nn[k, :, 7], "r", label="Net y"  if k == 0 else None)
-    plt.plot(est_traj_nn[k, :, 8], "r", label="Net z"  if k == 0 else None)
-
+    plt.plot(est_traj_nn[k, :, 3], "r", label="Net x"  if k == 0 else None)
+    plt.plot(est_traj_nn[k, :, 4], "r", label="Net y"  if k == 0 else None)
+    plt.plot(est_traj_nn[k, :, 5], "r", label="Net z"  if k == 0 else None)
+    plt.plot(ref_traj[k, :, 3], "b", label="Reference x"  if k == 0 else None)
+    plt.plot(ref_traj[k, :, 4], "b", label="Reference y"  if k == 0 else None)
+    plt.plot(ref_traj[k, :, 5], "b", label="Reference z"  if k == 0 else None)
 plt.legend()
 
+plt.figure()
+plt.grid()
+plt.title("Velocity MB")
+for k in range(ref_traj_llh.shape[0]):  # est_traj_nn.shape[0]):
+    plt.plot(est_traj_nn_MB[k, :, 3], "r", label="Net x"  if k == 0 else None)
+    plt.plot(est_traj_nn_MB[k, :, 4], "r", label="Net y"  if k == 0 else None)
+    plt.plot(est_traj_nn_MB[k, :, 5], "r", label="Net z"  if k == 0 else None)
+    plt.plot(ref_traj[k, :, 3], "b", label="Reference x"  if k == 0 else None)
+    plt.plot(ref_traj[k, :, 4], "b", label="Reference y"  if k == 0 else None)
+    plt.plot(ref_traj[k, :, 5], "b", label="Reference z"  if k == 0 else None)
+plt.legend()
 
 
 
@@ -739,23 +908,43 @@ plt.figure()
 plt.grid()
 plt.title("C_b_e")
 for k in range(ref_traj_llh.shape[0]):  # est_traj_nn.shape[0]):
-    plt.plot(ref_traj[k, :, 25], "b", label="ref"  if k == 0 else None)
-    plt.plot(est_traj_nn_MB[k, :, 10], "g", label="MB"  if k == 0 else None)
-    plt.plot(est_traj_nn[k, :, 10], "r", label="Net"  if k == 0 else None)
+    plt.plot(ref_traj[k, :, 23], "b", label="ref"  if k == 0 else None)
+    plt.plot(est_traj_nn_MB[k, :, 8], "g", label="MB"  if k == 0 else None)
+    plt.plot(est_traj_nn[k, :, 8], "r", label="Net"  if k == 0 else None)
 plt.legend()
 
+if save_to_matlab and operation == 'TEST':
+    scio.savemat(
+        out_mat_file,
+        mdict={
+            "ref_traj": ref_traj,
+            "est_traj_nn": est_traj_nn,
+            "est_traj_nn_MB": est_traj_nn_MB,
+            "ref_traj_llh": ref_traj_llh,
+            "est_traj_nn_llh": est_traj_nn_llh,
+            "est_traj_nn_llh_MB": est_traj_nn_llh_MB,
+            "est_KG_nn":predict_KG_net,
+            "meanloss_p": meanloss_p,
+            "meanloss_v": meanloss_v,
+            # "time_traj" : test_time_traj,
+        },
+    )
 
 # scio.savemat(
-#     "data/0316real.mat",
+#     out_mat_file,
 #     mdict={
 #         "ref_traj": ref_traj,
 #         "est_traj_nn": est_traj_nn,
+#         "est_traj_nn_MB": est_traj_nn_MB,
 #         "ref_traj_llh": ref_traj_llh,
 #         "est_traj_nn_llh": est_traj_nn_llh,
+#         "est_traj_nn_llh_MB": est_traj_nn_llh_MB,
+#         "est_KG_nn":predict_KG_net,
+#         "P_MB": P_MB,
+#         "KG_MB": KG_MB,
 #         # "time_traj" : test_time_traj,
 #     },
 # )
-
 
 
 # Calculate Position Error
