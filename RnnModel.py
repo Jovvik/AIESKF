@@ -20,7 +20,7 @@ import functions
 
 class LC_est_KG(nn.Module):
     def __init__(
-        self,
+        self, 
         dev,
         input_dim,
         hidden_dim,

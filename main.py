@@ -64,7 +64,7 @@ indx_MB = True
 # operation = 'TRAIN'
   
 operation = 'TEST'
-in_model = '0209_MEMS_withgrad_shuffle_gnssgap_10lstm1525_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_'
+in_model = '0212_MEMS_withgrad_shuffle_gnssgap_10lstm1105_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_valoss' 
 %matplotlib widget
 
 # operation = 'TRAIN_USEOLD'
@@ -90,7 +90,7 @@ idx_att_scale = '0.0001'
 idx_feedback_type = 'pvab'
 # idx_feedback_type = 'pvb'
 
-idx_other_settings = ''
+idx_other_settings = 'newstruc'
 
 
 # idx_other_settings = '_feedavpb_lkrelu_alltorchnorm_m2m_noifimuatt0101'
@@ -132,7 +132,7 @@ droupout_rate = 0
 recurrent_kind = 'lstm'  # 'rnn' 'gru' 'lstm'
 
 
-idx_num_epochs = 200
+idx_num_epochs = 100
 idx_learning_rate =1e-3
 idx_weight_decay = 0
 scheduler = "cosine_annealing 500"

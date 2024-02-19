@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+
 # define some constrans parameters
 constant_omega_ie = 7.2921151467e-05  # Earth rotation rate in rad/s
 constant_e = 0.0818191908425  # WGS84 eccentricity
