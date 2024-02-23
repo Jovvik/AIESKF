@@ -10,11 +10,12 @@
 #
 # -----------------------------------------------------------------------------
 import torch
+
 import functions
 
 
 class Pipeline_LC:
-    def __init__(self, net,  dev, num_epochs, learning_rate, weight_decay, loss_fn, scheduler_generator,nograd, lossweight_coeff, train_gnssgap, gnssgap, opti_type):
+    def __init__(self, net,  dev, num_epochs, learning_rate, weight_decay, loss_fn, scheduler_generator, lossweight_coeff, gnssgap, opti_type):
 
         self.net = net
         self.num_epochs = num_epochs
@@ -26,7 +27,6 @@ class Pipeline_LC:
         if opti_type == 'SGD':
             self.optimizer = torch.optim.SGD(self.net.parameters(), lr=learning_rate, momentum=0.9)
         
-        self.nograd = nograd
         self.lcoe_p = float(lossweight_coeff[0])
         self.lcoe_v = float(lossweight_coeff[1])
         self.lcoe_a = float(lossweight_coeff[2])
@@ -44,8 +44,6 @@ class Pipeline_LC:
         else:
             self.scheduler = None
         
-        self.train_gnssgap = train_gnssgap
-
 
     def get_x_init_error_free(self,ref):
         
@@ -84,79 +82,45 @@ class Pipeline_LC:
             # )
             # Use Error free init pva
             est_pos_init, est_vel_init, est_C_b_e_iter, est_att_init = self.get_x_init_error_free_batched(y[:, 0, :])
+            # last_output_train = torch.cat([est_pos_init, est_vel_init, est_att_init, est_C_b_e_iter.flatten(1)], dim=1)
+            output_all[:,0] = torch.cat([est_pos_init, est_vel_init, est_att_init, est_C_b_e_iter.flatten(1)], dim=1)
+            # self.net.init_sequence(Fs_meas, last_output_train, X[:, 0, :], imu_meas[:, 0, :])
+            self.net.init_sequence(Fs_meas, X[:, 0, :])
 
-            '''[pos, vel ,att[b_e]]'''
-            last_output_train = torch.cat([est_pos_init, est_vel_init, est_att_init, est_C_b_e_iter.flatten(1)], dim=1)
-
-            self.net.init_sequence(Fs_meas, last_output_train, X[:, 0, :], imu_meas[:, 0, -1, :])
-
-            if epoch < 10:
-                timesteps = 30
+            if epoch < 20:
+                timesteps = 30 * Fs - 1
+            # elif epoch < 40 :
+            #     timesteps = 60 * Fs - 1
             else:
-                timesteps = X.shape[1] - 1 # skip first one
+                timesteps = y.shape[1] - 1 # skip first one
+            # timesteps = y.shape[1] - 1
             for t in range(timesteps):
-                if self.nograd:
-                    with torch.no_grad():
-                        dr_temp, est_C_b_e_iter = functions.dead_reckoning_ecef_batched(
-                            Fs,
-                            last_output_train,
-                            est_C_b_e_iter,
-                            imu_meas[:, t],
-                            imu_error,
-                        )
-                else:
-                    dr_temp, est_C_b_e_iter = functions.dead_reckoning_ecef_batched(
-                        Fs,
-                        last_output_train,
-                        est_C_b_e_iter,
-                        imu_meas[:, t],
-                        imu_error,
+                # with torch.no_grad():
+                output_dr = functions.dead_reckoning_ecef_batched(Fs, output_all[:, t], imu_meas[:, t], imu_error)
+
+                if (t + 1) % (self.gnssgap * Fs) == 0:
+                    output_nn, imu_error, _ = self.net(
+                        X[:, int((t + 1) / Fs)],
+                        output_dr,
+                        imu_meas[:, t+1-Fs:t+1],
+                        output_all[:, t+1-Fs:t+1],
                     )
-
-                if self.train_gnssgap:
-
-                    if t % self.gnssgap == 0:
-                        output_train, est_C_b_e_iter, imu_error, _ = self.net(
-                            X[:, t + 1, :],
-                            dr_temp[:, -1],
-                            est_C_b_e_iter,
-                            imu_meas[:, t],
-                            last_output_train,
-                            dr_temp[:, -Fs:],
-                        )
-
-                        output_all[:, Fs * t + 1: Fs * t + Fs] = dr_temp[:, 1:-1]
-                        output_all[:, Fs * t + Fs] = output_train
-                        last_output_train = output_train
-                    else:
-                        output_all[:, Fs * t + 1: Fs * t + Fs] = dr_temp[:, 1:-1]
-                        output_all[:, Fs * t + Fs] = dr_temp[:, -1]
-                        last_output_train = dr_temp[:, -1]
+                    output_all[:, t+1] = output_nn
+                    # print(t + 1)
                 else:
-                    output_train, est_C_b_e_iter, imu_error, _ = self.net(
-                        X[:, t + 1, :],
-                        dr_temp[:, -1],
-                        est_C_b_e_iter,
-                        imu_meas[:, t],
-                        last_output_train,
-                        dr_temp[:, -Fs:],
-                    )
-
-                    output_all[:, Fs * t + 1: Fs * t + Fs] = dr_temp[:, 1:-1]
-                    output_all[:, Fs * t + Fs] = output_train
-                    last_output_train = output_train
+                    output_all[:, t+1] = output_dr
 
 
-            loss1 = self.loss_fn(self.lcoe_p * output_all[:, Fs:t * Fs + 1 :Fs, 0:3], self.lcoe_p * y[:, Fs:t * Fs + 1:Fs, 0:3])
-            loss2 = self.loss_fn(self.lcoe_v * output_all[:, Fs:t * Fs + 1 :Fs, 3:6], self.lcoe_v * y[:, Fs:t * Fs + 1:Fs, 3:6])
-            loss3 = self.loss_fn(self.lcoe_a * output_all[:, Fs:t * Fs + 1 :Fs, 9:18], self.lcoe_a * y[:, Fs:t * Fs + 1:Fs, 24:33])
-            # loss1 = self.loss_fn(self.lcoe_p * output_all[:, Fs:t * Fs + 1, 0:3], self.lcoe_p * y[:, Fs:t * Fs + 1, 0:3])
-            # loss2 = self.loss_fn(self.lcoe_v * output_all[:, Fs:t * Fs + 1, 3:6], self.lcoe_v * y[:, Fs:t * Fs + 1, 3:6])
-            # loss3 = self.loss_fn(self.lcoe_a * output_all[:, Fs:t * Fs + 1, 9:18], self.lcoe_a * y[:, Fs:t * Fs + 1, 24:33])
+            # loss1 = self.loss_fn(self.lcoe_p * output_all[:, Fs*self.gnssgap::Fs*self.gnssgap, 0:3], self.lcoe_p * y[:, Fs*self.gnssgap::Fs*self.gnssgap, 0:3])
+            # loss2 = self.loss_fn(self.lcoe_v * output_all[:, Fs*self.gnssgap::Fs*self.gnssgap, 3:6], self.lcoe_v * y[:, Fs*self.gnssgap::Fs*self.gnssgap, 3:6])
+            # loss3 = self.loss_fn(self.lcoe_a * output_all[:, Fs*self.gnssgap::Fs*self.gnssgap, 9:18], self.lcoe_a * y[:, Fs*self.gnssgap::Fs*self.gnssgap, 24:33])
+            loss1 = self.loss_fn(self.lcoe_p * output_all[:, Fs*self.gnssgap:t, 0:3], self.lcoe_p * y[:, Fs*self.gnssgap:t, 0:3])
+            loss2 = self.loss_fn(self.lcoe_v * output_all[:, Fs*self.gnssgap:t, 3:6], self.lcoe_v * y[:, Fs*self.gnssgap:t, 3:6])
+            loss3 = self.loss_fn(self.lcoe_a * output_all[:, Fs*self.gnssgap:t, 9:18], self.lcoe_a * y[:, Fs*self.gnssgap:t, 24:33])
 
             self.optimizer.zero_grad()
-            # loss_mean_train = loss1 + loss2 + loss3
-            loss_mean_train = loss2 + loss3
+            loss_mean_train = loss1 + loss2 + loss3
+            # loss_mean_train = loss2 #+ loss3
 
             loss_mean_train.backward()
             torch.nn.utils.clip_grad_norm_(self.net.parameters(),1)
@@ -176,191 +140,10 @@ class Pipeline_LC:
             print(f"MSE Loss in train data set is {float(loss_mean_train):f}")
          
         print(f"IMU error is {imu_error}")
-            # print(f'MSE Loss in val data set is {float(Loss_val):f}')
-            # save NN when reach minimum validation loss
-            # if Loss_val < min_Loss_val:
-            #     min_Loss_val = Loss_val
-            #     optimal_epoch = epoch
-            #     torch.save(self.net,self.out_nn_name)
-
-            # print(f'Optimal NN is at Epoch {optimal_epoch}, loss is {float(min_Loss_val):f}')
-
-        # writer.add_hparams(
-        #     {
-        #         "vel_coef": vel_coef,
-        #         "att_coef": att_coef,
-        #         "lr": self.optimizer.param_groups[0]["lr"],
-        #         "weight_decay": self.optimizer.param_groups[0]["weight_decay"],
-        #         "time_step": train_timestep,
-        #         "batch_size": self.batch_size,
-        #     },
-        #     {
-        #         name: np.array([metric.detach().cpu()])  # ignore the typing error
-        #         for name, metric in writer_metrics.items()
-        #     },
-        # )
-        # return (
-        #     est_pos_new,
-        #     est_vel_new,
-        #     est_att_new,
-        #     MSE_train_epoch,
-        #     MSE_val_epoch,
-        #     check_list
-        # )  
 
 
-    def train_lc_test(
-            self, train_loader, train_dataset, val_loader, val_dataset, Fs, Fs_meas
-        ):
 
-            for epoch in range(self.num_epochs):
-
-                self.net.epoch = epoch
-                self.net.train()
-
-                X, y, imu_meas = next(iter(train_loader))
-
-                batch_size = X.shape[0]
-
-                '''Here, we could use initialization stategy to init hidden state'''
-                self.net.init_hidden_state(batch_size)
-
-                # pos3 vel3 att3 Cbe9
-                output_all = torch.zeros(batch_size, train_dataset.time_step * Fs, 18).to(self.dev)
-                imu_error = torch.zeros(batch_size, 6).to(self.dev)
-
-                # # apply a random Gaussian error to the ref as init pva
-                # est_pos_old, est_vel_old, est_C_b_e_old = self.get_x_init(
-                #     train_dataset.targets[i, 0, :]
-                # )
-                # Use Error free init pva
-                est_pos_init, est_vel_init, est_C_b_e_iter, est_att_init = self.get_x_init_error_free_batched(y[:, 0, :])
-
-                '''[pos, vel ,att[b_e]]'''
-                last_output_train = torch.cat([est_pos_init, est_vel_init, est_att_init, est_C_b_e_iter.flatten(1)], dim=1)
-
-                self.net.init_sequence(Fs_meas, last_output_train, X[:, 0, :], imu_meas[:, 0, -1, :])
-
-                if epoch < 10:
-                    timesteps = 30
-                else:
-                    timesteps = X.shape[1] - 1 # skip first one
-                for t in range(timesteps):
-                    if self.nograd:
-                        with torch.no_grad():
-                            dr_temp, est_C_b_e_iter = functions.dead_reckoning_ecef_batched(
-                                Fs,
-                                last_output_train,
-                                est_C_b_e_iter,
-                                imu_meas[:, t],
-                                imu_error,
-                            )
-                    else:
-                        dr_temp, est_C_b_e_iter = functions.dead_reckoning_ecef_batched(
-                            Fs,
-                            last_output_train,
-                            est_C_b_e_iter,
-                            imu_meas[:, t],
-                            imu_error,
-                        )
-
-                    if self.train_gnssgap:
-
-                        if t % self.gnssgap == 0:
-                            output_train, est_C_b_e_iter, imu_error, _ = self.net(
-                                X[:, t + 1, :],
-                                dr_temp[:, -1],
-                                est_C_b_e_iter,
-                                imu_meas[:, t],
-                                last_output_train,
-                                dr_temp[:, -Fs:],
-                            )
-
-                            output_all[:, Fs * t + 1: Fs * t + Fs] = dr_temp[:, 1:-1]
-                            output_all[:, Fs * t + Fs] = output_train
-                            last_output_train = output_train
-                        else:
-                            output_all[:, Fs * t + 1: Fs * t + Fs] = dr_temp[:, 1:-1]
-                            output_all[:, Fs * t + Fs] = dr_temp[:, -1]
-                            last_output_train = dr_temp[:, -1]
-                    else:
-                        output_train, est_C_b_e_iter, imu_error, _ = self.net(
-                            X[:, t + 1, :],
-                            dr_temp[:, -1],
-                            est_C_b_e_iter,
-                            imu_meas[:, t],
-                            last_output_train,
-                            dr_temp[:, -Fs:],
-                        )
-
-                        output_all[:, Fs * t + 1: Fs * t + Fs] = dr_temp[:, 1:-1]
-                        output_all[:, Fs * t + Fs] = output_train
-                        last_output_train = output_train
-
-
-                loss1 = self.loss_fn(self.lcoe_p * output_all[:, Fs:t * Fs + 1 :Fs, 0:3], self.lcoe_p * y[:, Fs:t * Fs + 1:Fs, 0:3])
-                loss2 = self.loss_fn(self.lcoe_v * output_all[:, Fs:t * Fs + 1 :Fs, 3:6], self.lcoe_v * y[:, Fs:t * Fs + 1:Fs, 3:6])
-                loss3 = self.loss_fn(self.lcoe_a * output_all[:, Fs:t * Fs + 1 :Fs, 9:18], self.lcoe_a * y[:, Fs:t * Fs + 1:Fs, 24:33])
-                # loss1 = self.loss_fn(self.lcoe_p * output_all[:, Fs:t * Fs + 1, 0:3], self.lcoe_p * y[:, Fs:t * Fs + 1, 0:3])
-                # loss2 = self.loss_fn(self.lcoe_v * output_all[:, Fs:t * Fs + 1, 3:6], self.lcoe_v * y[:, Fs:t * Fs + 1, 3:6])
-                # loss3 = self.loss_fn(self.lcoe_a * output_all[:, Fs:t * Fs + 1, 9:18], self.lcoe_a * y[:, Fs:t * Fs + 1, 24:33])
-
-                self.optimizer.zero_grad()
-                # loss_mean_train = loss1 + loss2 + loss3
-                loss_mean_train = loss2 + loss3
-
-                loss_mean_train.backward()
-                torch.nn.utils.clip_grad_norm_(self.net.parameters(),1)
-                self.optimizer.step()
-                if self.scheduler is not None:
-                    self.scheduler.step()
-
-
-                # Epoch_Loss_mean = loss_pos_mean + loss_vel_mean + loss_att_mean
-                # Epoch_Loss_mean.backward()
-                # torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1)
-                # self.optimizer.step()
-                # self.scheduler.step()
-                # MSE_train_epoch[epoch] = Epoch_Loss_mean
-
-                print(f"Epoch {epoch}")
-                print(f"MSE Loss in train data set is {float(loss_mean_train):f}")
-            
-            print(f"IMU error is {imu_error}")
-                # print(f'MSE Loss in val data set is {float(Loss_val):f}')
-                # save NN when reach minimum validation loss
-                # if Loss_val < min_Loss_val:
-                #     min_Loss_val = Loss_val
-                #     optimal_epoch = epoch
-                #     torch.save(self.net,self.out_nn_name)
-
-                # print(f'Optimal NN is at Epoch {optimal_epoch}, loss is {float(min_Loss_val):f}')
-
-            # writer.add_hparams(
-            #     {
-            #         "vel_coef": vel_coef,
-            #         "att_coef": att_coef,
-            #         "lr": self.optimizer.param_groups[0]["lr"],
-            #         "weight_decay": self.optimizer.param_groups[0]["weight_decay"],
-            #         "time_step": train_timestep,
-            #         "batch_size": self.batch_size,
-            #     },
-            #     {
-            #         name: np.array([metric.detach().cpu()])  # ignore the typing error
-            #         for name, metric in writer_metrics.items()
-            #     },
-            # )
-            # return (
-            #     est_pos_new,
-            #     est_vel_new,
-            #     est_att_new,
-            #     MSE_train_epoch,
-            #     MSE_val_epoch,
-            #     check_list
-            # )  
-
-
-    def test_lc(self, test_loader, test_dataset, Fs, Fs_meas):
+    def test_lc(self, test_loader, test_dataset, Fs, Fs_meas, outage_s, outage_e):
 
         # time_step_test = dataset.features.shape[0]
         # test_features = torch.squeeze(dataset.features)
@@ -384,7 +167,7 @@ class Pipeline_LC:
 
         dt = 1 / Fs
 
-        self.net.init_hidden_state(1)
+        self.net.init_hidden_state(test_dataset.num_traj)
 
         # init features
         # self.net.init_sequence()
@@ -397,65 +180,58 @@ class Pipeline_LC:
         # est_pos_old, est_vel_old, est_C_b_e_old = self.get_x_init_error_free(
         #     test_targets[0, :]
         # )
+        X, y, imu_meas = next(iter(test_loader))
 
-        for i, (X, y, imu_meas) in enumerate(test_loader):
+        # for i, (X, y, imu_meas) in enumerate(test_loader):
             
-            imu_error = torch.zeros(6)
-            
-            est_pos_init, est_vel_init, est_C_b_e_iter, est_att_init = self.get_x_init_error_free(y[0, 0])
-            # _,_,est_att_init= functions.ecef2geo_ned(est_pos_init, est_vel_init, est_C_b_e_iter)
-            
-            predict_traj[i, 0] = torch.cat([est_pos_init, est_vel_init, est_att_init, est_C_b_e_iter.reshape(9)])
-            imu_meas = imu_meas.reshape(1, -1, 6)
+        imu_error = torch.zeros(test_dataset.num_traj, 6).to(self.dev)
+        
+        est_pos_init, est_vel_init, est_C_b_e_iter, est_att_init = self.get_x_init_error_free_batched(y[:, 0, :])
+        # _,_,est_att_init= functions.ecef2geo_ned(est_pos_init, est_vel_init, est_C_b_e_iter)
+        
+        predict_traj[:, 0] = torch.cat([est_pos_init, est_vel_init, est_att_init, est_C_b_e_iter.flatten(1)], dim=1)
 
-            # init features
-            self.net.init_sequence(Fs_meas, predict_traj[i, 0].unsqueeze(0), X[0, 0].unsqueeze(0), imu_meas[0, 0, -1].unsqueeze(0))
+        # init features
+        # self.net.init_sequence(Fs_meas, predict_traj[i, 0].unsqueeze(0), X[0, 0].unsqueeze(0), imu_meas[0, 0, -1].unsqueeze(0))
+
+        self.net.init_sequence(Fs_meas, X[:, 0, :])
+
+        for t in range(predict_traj.shape[1] - 1):
             
-            for t in range(predict_traj.shape[1] - 1):
-                
-                # if t % (Fs * 1) == 0 and t != 0:
-                # if t % Fs == 0 and t != 0 and t!= 100 and t!= 110 and t!= 120 and t!= 130 and t!= 140 and t!= 150 :
-                # if t % Fs == 0 and t != 0 and t!= 1000 and t!= 1010 and t!= 1020 and t!= 1030 and t!= 1040 and t!= 1050 and t!= 1060 and t!= 1070 and t!= 1080 and t!= 1090 and t!= 1100 and t!= 1110:
+            predict_traj[:, t + 1] = functions.dead_reckoning_ecef_batched(
+                Fs,
+                predict_traj[:, t],
+                imu_meas[:, t],
+                imu_error,
+            )
+            # if (t + 1) % (Fs * self.gnssgap) == 0:
+            if (t + 1) % Fs == 0:
+                if t < outage_s * Fs or t > outage_e * Fs:
+                    predict_traj[:, t + 1, :], imu_error, KG_net= self.net(
+                        X[:, int((t + 1) / Fs)],
+                        predict_traj[:, t + 1],
+                        imu_meas[:, (t+1)-Fs:(t+1)],
+                        predict_traj[:, (t+1)-Fs:(t+1)],
+                    )
+                    
+                bias_history[:, int(t / Fs), :] = imu_error
+                predict_KG_net[:, int(t / Fs), :] = KG_net
 
-                # if t % Fs == 0 and t != 0 and t!= 500 and t!= 510 and t!= 520 and t!= 530 and t!= 540 and t!= 550 and t!= 560 and t!= 570 and t!= 580 and t!= 590 and t!= 600 and t!= 610 :
-                if t % Fs == 0 and t != 0:
-                    if t < 1500 or t > 2000:
 
-                # if t <-1:
-                        predict_traj[i, t, :], est_C_b_e_iter, imu_error, KG_net= self.net.forward_unbatched(
-                            X[0, int(t / Fs), :],
-                            predict_traj[i, t],
-                            est_C_b_e_iter,
-                            imu_meas[0,t-Fs:t],
-                            predict_traj[i, t - 1],
-                            predict_traj[i, t - Fs : t],
-                        )
-                        
-                    bias_history[i, int(t / Fs), :] = imu_error
-                    predict_KG_net[i, int(t / Fs), :] = KG_net
-
-                predict_traj[i, t + 1], est_C_b_e_iter = functions.dead_reckoning_ecef_test(
-                    Fs,
-                    predict_traj[i, t],
-                    est_C_b_e_iter,
-                    imu_meas[0, t],
-                    imu_error,
-                )
-            
-            ref_traj[i, :, :] = y
+        
             
         with torch.no_grad():
-            for i in range(ref_traj.shape[0]):
-                for j in range(ref_traj.shape[1]):
+            for i in range(y.shape[0]):
+                for j in range(y.shape[1]):
                     predict_traj_llh[i,j,:3]  = torch.squeeze(functions.ecef2geo_ned(predict_traj[i,j,:3],predict_traj[i,j,3:6])[0])
                     predict_traj_llh[i,j,3:6] = torch.squeeze(functions.ecef2geo_ned(predict_traj[i,j,:3],predict_traj[i,j,3:6])[1])
-                    ref_traj_llh[i,j,:3]  = torch.squeeze(functions.ecef2geo_ned(ref_traj[i,j,:3],ref_traj[i,j,3:6])[0])
-                    ref_traj_llh[i,j,3:6] = torch.squeeze(functions.ecef2geo_ned(ref_traj[i,j,:3],ref_traj[i,j,3:6])[1])
+                    ref_traj_llh[i,j,:3]  = torch.squeeze(functions.ecef2geo_ned(y[i,j,:3],y[i,j,3:6])[0])
+                    ref_traj_llh[i,j,3:6] = torch.squeeze(functions.ecef2geo_ned(y[i,j,:3],y[i,j,3:6])[1])
                 
-        return predict_traj, ref_traj, bias_history, predict_traj_llh, ref_traj_llh, predict_KG_net
+        return predict_traj, y, bias_history, predict_traj_llh, ref_traj_llh, predict_KG_net
 
                 
-    def GnssInsLooseCoupling(self, datatype, test_loader, test_dataset, Fs, Fs_meas):
+    def GnssInsLooseCoupling(self, datatype, test_loader, test_dataset, Fs, Fs_meas, outage_s, outage_e):
 
         dt_imu = 1/Fs
         print('Datatype is:' + datatype)
@@ -571,7 +347,7 @@ class Pipeline_LC:
         
         
         """Set Pr and Pr rate measurement noise SD"""
-        gnss_pos_noise_sigma = 1
+        gnss_pos_noise_sigma = 5
         gnss_vel_noise_sigma = 0.1
     
     
@@ -647,9 +423,14 @@ class Pipeline_LC:
 
         dt = 1 / Fs
 
+        X_all, y_all, imu_meas_all = next(iter(test_loader))
 
-        for i, (X, y, imu_meas) in enumerate(test_loader):
-            
+        for i in range(test_dataset.num_traj):
+
+            X = X_all[i].unsqueeze(0)
+            y = y_all[i].unsqueeze(0)
+            imu_meas = imu_meas_all[i].unsqueeze(0)
+
             imu_error = torch.zeros(6)
             
             est_pos_init, est_vel_init, est_C_b_e_iter, est_att_init = self.get_x_init_error_free(y[0, 0])
@@ -668,8 +449,12 @@ class Pipeline_LC:
                 # if t % Fs == 0 and t != 0 and t!= 100 and t!= 110 and t!= 120 and t!= 130 and t!= 140 and t!= 150:
                 # if t % Fs == 0 and t != 0 and t!= 1000 and t!= 1010 and t!= 1020 and t!= 1030 and t!= 1040 and t!= 1050:
                 # if t <-1:
+                # if (t + 1) % (Fs * self.gnssgap) == 0:
+
                 if t % Fs == 0 and t != 0:
-                    if t < 1500 or t > 2000:
+                    if t < outage_s * Fs or t > outage_e * Fs:
+                    # if t < 150 or t > 300:
+
                 # if t % (Fs * 1) == 0 and t != 0:
                         predict_traj[i, t, :], est_C_b_e_iter, imu_error, P, KG_MB[i, int(t / Fs)] = functions.Model_LC(
                             X[0, int(t / Fs), :],

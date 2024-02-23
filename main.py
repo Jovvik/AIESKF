@@ -55,25 +55,26 @@ currt_folder = os.getcwd()
 #GIVE_real_data_0316_60s
 # simudata_Errorfree_3d_10hz
 
-data_paths = [currt_folder + '/data/' + 'Simu_MEMS_cut.csv',
+data_paths = ['/home/lis4hi/data/' + 'Simu_MEMS_cut.csv',
               ]
 
 indx_MB = True
 
 # 
-# operation = 'TRAIN'
+operation = 'TRAIN'
   
-operation = 'TEST'
-in_model = '0212_MEMS_withgrad_shuffle_gnssgap_10lstm1105_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_valoss' 
-%matplotlib widget
+# operation = 'TEST'
+# in_model = '0223_MEMSshuffle_gnssgap_5lstm1105_300_pvab_noifimu0501noifatt001_50Hz_Trajlength60_newloss'
+# %matplotlib widget
 
 # operation = 'TRAIN_USEOLD'
-# in_model = '0212_MEMS_withgrad_shuffle_gnssgap_10lstm1105_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_valoss'
-# out_model = '0212_MEMS_withgrad_shuffle_gnssgap_10lstm1105_200_pvab_noifimu0101noifatt00001_50Hz_Trajlength90_valoss1'
+# in_model = '0223_MEMSshuffle_gnssgap_5lstm1105_300_pvab_noifimu0501noifatt001_50Hz_Trajlength60_newloss'
+# out_model = '0223_MEMSshuffle_gnssgap_5lstm1105_300_pvab_noifimu0501noifatt001_50Hz_Trajlength60_newloss1'
+# %matplotlib widget
+
 
 # operation = 'MB_Only'
 
-nograd_sd = True # True: with torch.no_grad, nograd    False: none, withgrad
 idx_shuffle = True
 
 
@@ -84,22 +85,28 @@ gnssgap = 5 # every 5 seconds
 
 idx_ifimu = False
 idx_ifatt = False
-idx_imu_scale = ['0.1','0.1']
-idx_att_scale = '0.0001'
+idx_imu_scale = ['0.5','0.1']
+idx_att_scale = '0.01'
 
 idx_feedback_type = 'pvab'
 # idx_feedback_type = 'pvb'
 
-idx_other_settings = 'newstruc'
+idx_other_settings = 'newloss'
 
+indx_add_measerr = True
+# pos_add_error_gnss = [0,1,2,5,10]
+# vel_add_error_gnss = [0,0.1,0.2,0.5,1,5]
+pos_add_error_gnss = 1.
+vel_add_error_gnss = 0.5
 
 # idx_other_settings = '_feedavpb_lkrelu_alltorchnorm_m2m_noifimuatt0101'
 # idx_other_settings = '_m2m_loss123_' + str(pos_add_error_gnss) +'_' + str(vel_add_error_gnss)
 idx_lossweight_coeff = ['1','10','5']
 
-tarj_length = 90
+tarj_length = 60 #second
 target_Fs = 50
-
+outage_s = 30 #second
+outage_e = 50 #second
 
 save_to_matlab = True
 if operation == 'TEST':
@@ -119,7 +126,7 @@ Fs = target_Fs  # IMU freq
 Fs_meas = fs_GNSS  # range meas freq
 
 
-
+# input_dim = 18
 input_dim = 6 + 6 + 9 + 9
 # input_dim = 6+ 6 + 6
 
@@ -128,14 +135,14 @@ n_layers = 4
 linearfc2_dim = 512
 linearfc3_dim = 256
 output_dim = 54
-droupout_rate = 0
+droupout_rate = 0.5
 recurrent_kind = 'lstm'  # 'rnn' 'gru' 'lstm'
 
 
-idx_num_epochs = 100
+idx_num_epochs = 300
 idx_learning_rate =1e-3
 idx_weight_decay = 0
-scheduler = "cosine_annealing 500"
+scheduler = "cosine_annealing 300"
 # scheduler = "step 100 0.1"
 
 # scheduler = "None"
@@ -158,12 +165,10 @@ if operation == 'TRAIN':
         idx_dataset_type = '_bias'
     elif 'MEMS' in data_paths[0]:
         idx_dataset_type = '_MEMS'
+    elif 'free' in data_paths[0]:
+        idx_dataset_type = '_Errorfree'
 
 
-    if nograd_sd == False:
-        idx_dr_grad = '_withgrad_'
-    else:
-        idx_dr_grad = '_nograd_'    
     if idx_shuffle == False:
         idx_shuffle_str = '_'
     else:
@@ -195,7 +200,7 @@ if operation == 'TRAIN':
 
 
     idx_lossweight_coeff_str = ''.join(idx_lossweight_coeff)    
-    out_model = today_date  + idx_dataset_type + idx_dr_grad + idx_shuffle_str + inx_train_gnssgap + recurrent_kind + idx_lossweight_coeff_str + '_' + str(idx_num_epochs) + '_' + idx_feedback_type + '_' +  idx_ifimu_str + idx_imu_scale_str + idx_ifatt_str + idx_att_scale_str + '_' + str(target_Fs) + 'Hz_Trajlength' + str(tarj_length) + '_' + idx_other_settings
+    out_model = today_date  + idx_dataset_type + idx_shuffle_str + inx_train_gnssgap + recurrent_kind + idx_lossweight_coeff_str + '_' + str(idx_num_epochs) + '_' + idx_feedback_type + '_' +  idx_ifimu_str + idx_imu_scale_str + idx_ifatt_str + idx_att_scale_str + '_' + str(target_Fs) + 'Hz_Trajlength' + str(tarj_length) + '_' + idx_other_settings
     out_model_path = currt_folder + '/model/' + out_model + '.pt'
 
     LoadModel = False
@@ -347,6 +352,17 @@ acceleration = torch.zeros(position_llh.shape[0],position_llh.shape[1],3)
 train_num = round(pos_meas.shape[0]*0.9)
 test_num = pos_meas.shape[0] - train_num
 
+if indx_add_measerr:
+        # for i in range(pos_meas.shape[0]):
+    manual_error_pos = torch.randn(pos_meas.shape[0],pos_meas.shape[1],pos_meas.shape[2]) * pos_add_error_gnss
+    manual_error_vel = torch.randn(pos_meas.shape[0],pos_meas.shape[1],pos_meas.shape[2]) * vel_add_error_gnss
+    pos_meas_gnss = pos_meas + manual_error_pos
+    vel_meas_gnss = vel_meas + manual_error_vel
+else:
+    pos_meas_gnss = pos_meas
+    vel_meas_gnss = vel_meas
+
+
 att_ecef_euler_rad = torch.zeros(orientation_euler_rad.shape[0],orientation_euler_rad.shape[1],3)
 reshape_C_b_e = torch.zeros(orientation_euler_rad.shape[0],orientation_euler_rad.shape[1],9)
 for ii in range(orientation_euler_rad.shape[0]):
@@ -375,17 +391,17 @@ for ii in range(orientation_euler_rad.shape[0]):
 # =============================================================================
 # Linear Dataset
 # X = torch.cat((r1, r2, r3), dim=2).to(dev)
-X = torch.cat((pos_meas, vel_meas), dim=2).to(dev)
+X = torch.cat((pos_meas_gnss, vel_meas_gnss), dim=2).to(dev)
 T = torch.cat((position_ecef, velocity_ecef, position_ned, velocity_ned, position_llh, acceleration, orientation_euler_rad, att_ecef_euler_rad, reshape_C_b_e), dim=2).to(dev)
 IMU = torch.cat((accbody, angularVelocity), dim=2).to(dev)
-IMU = IMU.reshape(IMU.shape[0], -1, Fs, 6)
 
 
 # shuffle
-idx_s = torch.randperm(X.shape[0])
-X = X[idx_s].view(X.size())
-T = T[idx_s].view(T.size())
-IMU = IMU[idx_s].view(IMU.size())
+if idx_shuffle == True:
+    idx_s = torch.randperm(X.shape[0])
+    X = X[idx_s].view(X.size())
+    T = T[idx_s].view(T.size())
+    IMU = IMU[idx_s].view(IMU.size())
 
 
 # Circular Dataset
@@ -461,14 +477,10 @@ class Range_INS_Dataset(Dataset):
 
 train_dataset = Range_INS_Dataset(train_features, train_targets, train_IMU)
 
-if idx_shuffle == True:
-    train_loader = DataLoader(
-        dataset=train_dataset, batch_size=train_batch_size, shuffle=True
-    )
-else:
-    train_loader = DataLoader(
-        dataset=train_dataset, batch_size=train_batch_size, shuffle=False
-    )  
+
+train_loader = DataLoader(
+    dataset=train_dataset, batch_size=train_batch_size, shuffle=False
+)  
 
 '''Here, if shuffle = false, we only take the fisrt train_batch_size trajectory to train'''
 
@@ -476,7 +488,7 @@ val_dataset = Range_INS_Dataset(val_features, val_targets, val_IMU)
 val_loader = DataLoader(dataset=val_dataset, batch_size=1, shuffle=False)
 
 test_dataset = Range_INS_Dataset(test_features, test_targets, test_IMU)
-test_loader = DataLoader(dataset=test_dataset, batch_size=1, shuffle=False)
+test_loader = DataLoader(dataset=test_dataset, batch_size=test_num, shuffle=False)
 
 # =============================================================================
 #                               Init Net
@@ -589,9 +601,7 @@ Trainer = Pipeline.Pipeline_LC(
     weight_decay=idx_weight_decay,
     loss_fn=nn.MSELoss(reduction="mean"),
     scheduler_generator=make_scheduler(scheduler),
-    nograd = nograd_sd,
     lossweight_coeff = idx_lossweight_coeff,
-    train_gnssgap = indx_train_gnssgap,
     gnssgap = gnssgap,
     opti_type = opti_type,
 )
@@ -613,7 +623,7 @@ if SaveModel:
 # todo: change to a test dataset
 # this is fine as long as we don't use the validation dataset (i.e. as a stopping criterion)
 # Change output to checklist to check several params
-est_traj_nn, ref_traj, bias_history, est_traj_nn_llh, ref_traj_llh, predict_KG_net= Trainer.test_lc(test_loader, test_dataset, Fs, Fs_meas)
+est_traj_nn, ref_traj, bias_history, est_traj_nn_llh, ref_traj_llh, predict_KG_net= Trainer.test_lc(test_loader, test_dataset, Fs, Fs_meas, outage_s, outage_e)
 
 # KGain = check_list_test[0].cpu().detach().numpy()
 # P = check_list_test[1].cpu().detach().numpy()
@@ -683,7 +693,7 @@ pprint(losses)
 if indx_MB:
 
     MB_dataset_type = 'real'
-    est_traj_nn_MB, ref_traj_MB, bias_history_MB, est_traj_nn_llh_MB, ref_traj_llh_MB, P_MB, KG_MB= Trainer.GnssInsLooseCoupling(MB_dataset_type, test_loader, test_dataset, Fs, Fs_meas)
+    est_traj_nn_MB, ref_traj_MB, bias_history_MB, est_traj_nn_llh_MB, ref_traj_llh_MB, P_MB, KG_MB= Trainer.GnssInsLooseCoupling(MB_dataset_type, test_loader, test_dataset, Fs, Fs_meas, outage_s, outage_e)
 
 
     losses = {

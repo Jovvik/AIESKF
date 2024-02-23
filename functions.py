@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-
 # define some constrans parameters
 constant_omega_ie = 7.2921151467e-05  # Earth rotation rate in rad/s
 constant_e = 0.0818191908425  # WGS84 eccentricity
@@ -306,9 +305,7 @@ def geo_ned2ecef_0(*arg):
 
 
 
-def dead_reckoning_ecef(
-    Fs, dr_temp, est_C_b_e_new, imu_meas, imu_error
-):
+def dead_reckoning_ecef(Fs, dr_temp, imu_meas, imu_error):
     # if on_cpu:
     #     result_dev = est_pos_new.device
     #     dev = torch.device("cpu")
@@ -316,139 +313,125 @@ def dead_reckoning_ecef(
     #     result_dev = est_pos_new.device
     #     dev = result_dev
     dt = 1/Fs
-    dr_result = [dr_temp]
+    old_C_b_e_prev = dr_temp[9:18].reshape(3, 3)
 
-    # move initial data to dev
-    # est_pos_new = est_pos_new.to(dev)
-    # est_vel_new = est_vel_new.to(dev)
-    # est_C_b_e_new = est_C_b_e_new.to(dev)
-    # imu = imu[:: int(dt * 100), :].to(dev)
+    f_ib_b = imu_meas[0:3] - imu_error[0:3]
+    omega_ib_b = imu_meas[3:6] - imu_error[3:6]
+    # ATTITUDE UPDATE
+    # From (2.145) determine the Earth rotation over the update interval
+    # C_Earth = C_e_i' * old_C_e_i
+    # with torch.no_grad():
 
-    # old_r_eb_e_prev = est_pos_new
-    # old_v_eb_e_prev = est_vel_new
-    old_C_b_e_prev = est_C_b_e_new
-    # old_v_eb_e_new = None
-    # old_v_eb_e_new = None
-    # old_C_b_e_new = None
-    for i in range(imu_meas.shape[0]):
+    alpha_ie = torch.tensor(constant_omega_ie * dt)
+    C_Earth = torch.tensor(
+        [
+            [cos(alpha_ie), sin(alpha_ie), 0.0],
+            [-sin(alpha_ie), cos(alpha_ie), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        device=dev,
+    )
+    # Calculate attitude increment, magnitude, and skew-symmetric matrix
+    alpha_ib_b = omega_ib_b.squeeze() * dt
+    # this produces a warning, we should fix it
+    # mag_alpha = torch.sqrt(alpha_ib_b.detach().T @ alpha_ib_b.detach())
+    # print(alpha_ib_b)
+    # print(alpha_ib_b.T)
+    mag_alpha = torch.norm(alpha_ib_b)
+    # print(mag_alpha)
 
+    Alpha_ib_b = torch.stack((
+        torch.zeros(1).squeeze().to(dev), -alpha_ib_b[2], alpha_ib_b[1],
+        alpha_ib_b[2], torch.zeros(1).squeeze().to(dev), -alpha_ib_b[0],
+        -alpha_ib_b[1], alpha_ib_b[0], torch.zeros(1).squeeze().to(dev)
+    )).reshape(3, 3)
 
-        f_ib_b = imu_meas[i, 0:3] - imu_error[0:3]
-        omega_ib_b = imu_meas[i, 3:6] - imu_error[3:6]
-        # ATTITUDE UPDATE
-        # From (2.145) determine the Earth rotation over the update interval
-        # C_Earth = C_e_i' * old_C_e_i
-        # with torch.no_grad():
+    # Obtain coordinate transformation matrix from the new attitude w.r.t. an
+    # inertial frame to the old using Rodrigues' formula, (5.73)
 
-        alpha_ie = torch.tensor(constant_omega_ie * dt)
-        C_Earth = torch.tensor(
-            [
-                [cos(alpha_ie), sin(alpha_ie), 0.0],
-                [-sin(alpha_ie), cos(alpha_ie), 0.0],
-                [0.0, 0.0, 1.0],
-            ],
-            device=dev,
-        )
-        # Calculate attitude increment, magnitude, and skew-symmetric matrix
-        alpha_ib_b = omega_ib_b.squeeze() * dt
-        # this produces a warning, we should fix it
-        # mag_alpha = torch.sqrt(alpha_ib_b.detach().T @ alpha_ib_b.detach())
-        # print(alpha_ib_b)
-        # print(alpha_ib_b.T)
-        mag_alpha = torch.norm(alpha_ib_b)
-        # print(mag_alpha)
+    # todo: I dropped the if here due to lack of support in torch.vmap.
+    # This should be okay, as with low values of mag_alpha sin(m) / m = 1 and (1 - cos(m)) / m^2 = 0
+    # if mag_alpha > 1.0e-8:
+    #     C_new_old = (
+    #         torch.eye(3, device=dev)
+    #         + torch.sin(mag_alpha) / mag_alpha * Alpha_ib_b
+    #         + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b @ Alpha_ib_b
+    #     )
+    # else:
+    #     C_new_old = torch.eye(3, device=dev) + Alpha_ib_b
+    C_new_old = (
+        torch.eye(3, device=dev)
+        + torch.sin(mag_alpha) / mag_alpha * Alpha_ib_b
+        + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b @ Alpha_ib_b
+    )
 
-        Alpha_ib_b = torch.stack((
-            torch.zeros(1).squeeze().to(dev), -alpha_ib_b[2], alpha_ib_b[1],
-            alpha_ib_b[2], torch.zeros(1).squeeze().to(dev), -alpha_ib_b[0],
-            -alpha_ib_b[1], alpha_ib_b[0], torch.zeros(1).squeeze().to(dev)
-        )).reshape(3, 3)
+    # Update attitude using (5.75)
+    old_C_b_e_new = C_Earth @ old_C_b_e_prev @ C_new_old
+    # SPECIFIC FORCE FRAME TRANSFORMATION
+    # Calculate the average body-to-ECEF-frame coordinate transformation
+    # matrix over the update interval using (5.84) and (5.85)
+    # todo: I dropped the if here due to lack of support in torch.vmap. This will be an issue
+    # if mag_alpha > 1.0e-8:
+    #     ave_C_b_e = (
+    #         old_C_b_e_prev
+    #         @ (
+    #             torch.eye(3, device=dev)
+    #             + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b
+    #             + (1 - torch.sin(mag_alpha) / mag_alpha)
+    #             / mag_alpha ** 2
+    #             * Alpha_ib_b
+    #             @ Alpha_ib_b
+    #         )
+    #         - 0.5 * skew_symmetric([0, 0, alpha_ie]).to(dev) @ old_C_b_e_prev
+    #     )
+    # else:
+    #     ave_C_b_e = (
+    #         old_C_b_e_prev
+    #         - 0.5 * skew_symmetric([0, 0, alpha_ie]).to(dev) @ old_C_b_e_prev
+    #     )
 
-        # Obtain coordinate transformation matrix from the new attitude w.r.t. an
-        # inertial frame to the old using Rodrigues' formula, (5.73)
-
-        # todo: I dropped the if here due to lack of support in torch.vmap.
-        # This should be okay, as with low values of mag_alpha sin(m) / m = 1 and (1 - cos(m)) / m^2 = 0
-        # if mag_alpha > 1.0e-8:
-        #     C_new_old = (
-        #         torch.eye(3, device=dev)
-        #         + torch.sin(mag_alpha) / mag_alpha * Alpha_ib_b
-        #         + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b @ Alpha_ib_b
-        #     )
-        # else:
-        #     C_new_old = torch.eye(3, device=dev) + Alpha_ib_b
-        C_new_old = (
+    ave_C_b_e = (
+        old_C_b_e_prev
+        @ (
             torch.eye(3, device=dev)
-            + torch.sin(mag_alpha) / mag_alpha * Alpha_ib_b
-            + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b @ Alpha_ib_b
+            + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b
+            + (1 - torch.sin(mag_alpha) / mag_alpha)
+            / mag_alpha ** 2
+            * Alpha_ib_b
+            @ Alpha_ib_b
         )
-
-        # Update attitude using (5.75)
-        old_C_b_e_new = C_Earth @ old_C_b_e_prev @ C_new_old
-        # SPECIFIC FORCE FRAME TRANSFORMATION
-        # Calculate the average body-to-ECEF-frame coordinate transformation
-        # matrix over the update interval using (5.84) and (5.85)
-        # todo: I dropped the if here due to lack of support in torch.vmap. This will be an issue
-        # if mag_alpha > 1.0e-8:
-        #     ave_C_b_e = (
-        #         old_C_b_e_prev
-        #         @ (
-        #             torch.eye(3, device=dev)
-        #             + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b
-        #             + (1 - torch.sin(mag_alpha) / mag_alpha)
-        #             / mag_alpha ** 2
-        #             * Alpha_ib_b
-        #             @ Alpha_ib_b
-        #         )
-        #         - 0.5 * skew_symmetric([0, 0, alpha_ie]).to(dev) @ old_C_b_e_prev
-        #     )
-        # else:
-        #     ave_C_b_e = (
-        #         old_C_b_e_prev
-        #         - 0.5 * skew_symmetric([0, 0, alpha_ie]).to(dev) @ old_C_b_e_prev
-        #     )
-
-        ave_C_b_e = (
-            old_C_b_e_prev
-            @ (
-                torch.eye(3, device=dev)
-                + (1 - torch.cos(mag_alpha)) / mag_alpha ** 2 * Alpha_ib_b
-                + (1 - torch.sin(mag_alpha) / mag_alpha)
-                / mag_alpha ** 2
-                * Alpha_ib_b
-                @ Alpha_ib_b
-            )
-            - 0.5 * skew_symmetric(zero_pad(alpha_ie)).to(dev) @ old_C_b_e_prev
-        )
-        # Transform specific force to ECEF-frame resolving axes using (5.85)
-        f_ib_e = ave_C_b_e @ f_ib_b
+        - 0.5 * skew_symmetric(zero_pad(alpha_ie)).to(dev) @ old_C_b_e_prev
+    )
+    # Transform specific force to ECEF-frame resolving axes using (5.85)
+    f_ib_e = old_C_b_e_new @ f_ib_b
 
 
 
-        # CALCULATE ATTITUDE
-        # _,_,est_att_new = ecef2geo_ned(est_pos_new, est_vel_new, est_C_b_e_new)
-        est_att_new = torch.squeeze(CTM_to_euler(old_C_b_e_new.T))
-        # print(est_att_new)
-        old_C_b_e_prev = old_C_b_e_new
+    # CALCULATE ATTITUDE
+    # _,_,est_att_new = ecef2geo_ned(est_pos_new, est_vel_new, est_C_b_e_new)
+    est_att_new = torch.squeeze(CTM_to_euler(old_C_b_e_new.T))
+    # print(est_att_new)
 
-        # UPDATE VELOCITY
-        est_vel_new = dr_result[i][3:6] + dt * ( f_ib_e + gravity_ECEF(dr_result[i][0:3]) - 2 * skew_symmetric(zero_pad(constant_omega_ie)).to(dev) @ dr_result[i][3:6])
+    # UPDATE VELOCITY
 
-        '''should use another way to calculate position? if so there is a gradient question'''
-        # UPDATE CARTESIAN POSITION
-        est_pos_new = dr_result[i][0:3] + (dr_result[i][3:6] + est_vel_new) / 2 * dt
+    est_vel_new = dr_temp[3:6] + dt * ( f_ib_e + gravity_ECEF(dr_temp[0:3]) - 2 * skew_symmetric(zero_pad(constant_omega_ie)).to(dev) @ dr_temp[3:6])
+
+    '''should use another way to calculate position? if so there is a gradient question'''
+    # UPDATE CARTESIAN POSITION
+
+    est_pos_new = dr_temp[0:3] + (dr_temp[3:6] + est_vel_new) / 2 * dt
 
 
-        ''''Should use detach to gravity?'''
-        dr_result.append(torch.cat([est_pos_new,est_vel_new,est_att_new,old_C_b_e_new.reshape(9)]))
+    ''''Should use detach to gravity?'''
+    dr_result = torch.cat([est_pos_new,est_vel_new,est_att_new,old_C_b_e_new.reshape(9)])
 
 
 
 
-    return  torch.stack(dr_result), old_C_b_e_new
+    return dr_result
 
 
-dead_reckoning_ecef_batched = torch.vmap(dead_reckoning_ecef, in_dims=(None, 0, 0, 0, 0), out_dims=0)
+dead_reckoning_ecef_batched = torch.vmap(dead_reckoning_ecef, in_dims=(None, 0, 0, 0), out_dims=0)
 
 
 def dead_reckoning_ecef_test(Fs, dr_temp, est_C_b_e, imu_meas, imu_error):
@@ -519,7 +502,7 @@ def dead_reckoning_ecef_test(Fs, dr_temp, est_C_b_e, imu_meas, imu_error):
     #         - 0.5 * skew_symmetric(zero_pad(alpha_ie)).to(dev) @ est_C_b_e
     #     )
     # Transform specific force to ECEF-frame resolving axes using (5.85)
-    f_ib_e = ave_C_b_e @ f_ib_b
+    f_ib_e = C_b_e_new @ f_ib_b
 
 
 
@@ -655,32 +638,33 @@ def gravity_ECEF(p_eb_e):
     # Copyright 2012, Paul Groves
     # License: BSD; see license.txt for details
     # Parameters
-    dev = p_eb_e.device
-    R_0 = 6378137
-    # WGS84 Equatorial radius in meters
-    mu = 3.986004418e14
-    # WGS84 Earth gravitational constant (m^3 s^-2)
-    J_2 = 1.082627e-3
-    # WGS84 Earth's second gravitational constant
-    omega_ie = 7.292115e-5
-    # Earth rotation rate (rad/s)
-    # Begins
-    # Calculate distance from center of the Earth
-    mag_r = torch.norm(p_eb_e)
-    # If the input position is 0,0,0, produce a dummy output
-    # todo: vmap does not support if. This might be okay
-    # if mag_r == 0:
-    #     g = torch.tensor([[0], [0], [0]], device=dev)
-    # Calculate gravitational acceleration using (2.142)
-    # else:
-    z_scale = 5 * (p_eb_e[2] / mag_r) ** 2
-    z_scale_mat = (torch.tensor([1, 1, 3]).to(dev) - z_scale) * p_eb_e
-    z_scale_mat[0] = (1 - z_scale) * p_eb_e[0]
-    z_scale_mat[1] = (1 - z_scale) * p_eb_e[1]
-    z_scale_mat[2] = (3 - z_scale) * p_eb_e[2]
-    gamma = (-mu / mag_r ** 3 * (p_eb_e + (1.5 * J_2 * (R_0 / mag_r) ** 2 * z_scale_mat)))
-    # Add centripetal acceleration using (2.133)
-    g = torch.cat((gamma[0:2] + omega_ie ** 2 * p_eb_e[0:2], gamma[2].view(1)), dim=0)
+    with torch.no_grad():
+        dev = p_eb_e.device
+        R_0 = 6378137
+        # WGS84 Equatorial radius in meters
+        mu = 3.986004418e14
+        # WGS84 Earth gravitational constant (m^3 s^-2)
+        J_2 = 1.082627e-3
+        # WGS84 Earth's second gravitational constant
+        omega_ie = 7.292115e-5
+        # Earth rotation rate (rad/s)
+        # Begins
+        # Calculate distance from center of the Earth
+        mag_r = torch.norm(p_eb_e)
+        # If the input position is 0,0,0, produce a dummy output
+        # todo: vmap does not support if. This might be okay
+        # if mag_r == 0:
+        #     g = torch.tensor([[0], [0], [0]], device=dev)
+        # Calculate gravitational acceleration using (2.142)
+        # else:
+        z_scale = 5 * (p_eb_e[2] / mag_r) ** 2
+        z_scale_mat = (torch.tensor([1, 1, 3]).to(dev) - z_scale) * p_eb_e
+        z_scale_mat[0] = (1 - z_scale) * p_eb_e[0]
+        z_scale_mat[1] = (1 - z_scale) * p_eb_e[1]
+        z_scale_mat[2] = (3 - z_scale) * p_eb_e[2]
+        gamma = (-mu / mag_r ** 3 * (p_eb_e + (1.5 * J_2 * (R_0 / mag_r) ** 2 * z_scale_mat)))
+        # Add centripetal acceleration using (2.133)
+        g = torch.cat((gamma[0:2] + omega_ie ** 2 * p_eb_e[0:2], gamma[2].view(1)), dim=0)
     return g
 
 
@@ -697,6 +681,7 @@ def initialize_NED_attitude(att_euler):
 
 def lc_propagate_f(est_pos_old, est_C_b_e_old, imu, Fs_meas):
     meas_f_ib_b = imu[:3].reshape(3, 1)
+    est_C_b_e_old = est_C_b_e_old.reshape(3,3)
     est_L_b_old = ecef2geo_ned(est_pos_old)
     dt = 1/Fs_meas
     """ Set State transition matrix F """

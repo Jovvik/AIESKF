@@ -20,7 +20,7 @@ import functions
 
 class LC_est_KG(nn.Module):
     def __init__(
-        self, 
+        self,
         dev,
         input_dim,
         hidden_dim,
@@ -107,9 +107,10 @@ class LC_est_KG(nn.Module):
 
         self.outputlayer = nn.Linear(self.linearfc3_dim, self.output_dim)
         # self.outputlayer.register_full_backward_hook(print_backward)
+        # self.biaslayer1 = nn.Linear(cnn_out_channels * (Fs - 1), 3, bias=False)
+        # self.biaslayer2 = nn.Linear(cnn_out_channels * (Fs - 1), 3, bias=False)
         self.biaslayer1 = nn.Linear(self.linearfc3_dim, 3, bias=False)
         self.biaslayer2 = nn.Linear(self.linearfc3_dim, 3, bias=False)
-
         # self.biaslayer.register_full_backward_hook(print_backward)
 
     def init_hidden_state(self, batch_size):
@@ -124,18 +125,19 @@ class LC_est_KG(nn.Module):
             self.state = torch.zeros(self.n_layers, batch_size, self.hidden_dim).to(self.dev)
             nn.init.xavier_normal_(self.state)
 
-    def init_sequence(self, Fs_meas, init_pva, init_meas, init_imu):
-        assert init_pva.shape[0] == init_meas.shape[0] == init_imu.shape[0]
+    # def init_sequence(self, Fs_meas, init_pva, init_meas, init_imu):
+    def init_sequence(self, Fs_meas, init_meas):
+        # assert init_pva.shape[0] == init_meas.shape[0] == init_imu.shape[0]
         batch_size = init_meas.shape[0]
         self.x_old_old = torch.zeros(batch_size, 9).to(self.dev) # x_t-1|t-1
         self.x_old_old_previous = torch.zeros(batch_size, 9).to(self.dev) # x_t-2|t-2
         self.x_pred_old_previous = torch.zeros(batch_size, 9).to(self.dev) # x_t-1|t-2
         # self.meas_old = init_meas # y_t-1
         self.meas_old = init_meas # y_t-1
-        self.imu_old = init_imu
+        # self.imu_old = init_imu
 
         self.Fs_meas = Fs_meas
-        self.prev_out_old = init_pva[:,:9]
+        # self.prev_out_old = init_pva[:,:9]
 
 
     def get_KG(self, features_KG, imu, dr):
@@ -225,17 +227,17 @@ class LC_est_KG(nn.Module):
         return KG, bias
 
 
-    def forward_unbatched(self, meas, dr_temp, est_C_b_e_old, imu, prev_out, dr):
-        dr_new, est_C_b_e_new, imu_error, KGain = self.forward(meas.unsqueeze(0), dr_temp.unsqueeze(0), est_C_b_e_old.unsqueeze(0), imu.unsqueeze(0), prev_out.unsqueeze(0), dr.unsqueeze(0))
-        return dr_new.squeeze(0), est_C_b_e_new.squeeze(0), imu_error.squeeze(0), KGain.squeeze(0)
+    def forward_unbatched(self, meas, dr_temp, imu, dr):
+        dr_new, imu_error, KGain = self.forward(meas.unsqueeze(0), dr_temp.unsqueeze(0), imu.unsqueeze(0), dr.unsqueeze(0))
+        return dr_new.squeeze(0), imu_error.squeeze(0), KGain.squeeze(0)
 
 
-    def forward(self, meas, dr_temp, est_C_b_e_old, imu, prev_out, dr):
+    def forward(self, meas, output_dr, imu_train, dr_train):
 
         """Get Features"""
 
         # testing this
-        F = functions.lc_propagate_f_batched(dr_temp[:,0:3], est_C_b_e_old, imu[:,-1], self.Fs_meas)
+        F = functions.lc_propagate_f_batched(output_dr[:,0:3], output_dr[:,9:18], imu_train[:,-1], self.Fs_meas)
         self.x_pred_old = torch.bmm(F, self.x_old_old.unsqueeze(2)).squeeze()
         # x_t-1|t-2                         x_t|t-1
         # self.x_error_old_previous_predict = self.x_error_old_predict
@@ -252,7 +254,7 @@ class LC_est_KG(nn.Module):
         # f_4 = imu[-1] - self.imu_old
         # f_4 = self.x_old_old
 
-        f_4 = dr_temp[:,0:6] - meas
+        f_4 = output_dr[:,0:6] - meas
 
         # f_5 = prev_out[:,0:6] - self.prev_out_old[:,0:6]
 
@@ -272,19 +274,19 @@ class LC_est_KG(nn.Module):
 
         # features_KG = torch.cat([f_1.detach(),f_2.detach(),f_3.detach(),f_5.detach()], dim=0)
 
-        features_KG = torch.cat([f_1,f_2,f_3,f_4], dim=1)
-        # features_KG = torch.cat([f_3], dim=1)
-        # features_KG = torch.cat([f_1.detach(),f_2.detach(),f_3.detach(),f_4.detach()], dim=0)
+        # features_KG = torch.cat([f_1,f_2,f_3,f_4], dim=1)
+        # features_KG = torch.cat([f_1,f_2], dim=1)
+        features_KG = torch.cat([f_1.detach(),f_2.detach(),f_3.detach(),f_4.detach()], dim=1)
 
         # KGainNet_in = KGainNet_in.detach()
         # print(KGainNet_in)
         """Kalman Gain Network Step"""
-        KG, imu_error = self.get_KG(features_KG, imu, dr)
+        KG, imu_error = self.get_KG(features_KG, imu_train, dr_train)#.detach())
 
         # Reshape Kalman Gain to a Matrix
         KGain = torch.reshape(KG, (F.shape[0], 9, 6))
         """Update"""
-        delta_z = dr_temp[:,0:6] - meas
+        delta_z = output_dr[:,0:6] - meas
         # if abs(sum(delta_z)) > 100:
         #     delta_z = func.normalize(delta_z, p=2, dim=0, eps=1e-12, out=None)
         Inno = torch.bmm(KGain, delta_z.unsqueeze(2)).squeeze(2)
@@ -297,12 +299,12 @@ class LC_est_KG(nn.Module):
         # est_C_b_e_new = functions.euler_to_CTM(self.dr_new[6:]).T
         # else:
         #     # # '''one way'''
-        dr_new_pv = dr_temp[:,:6] - Inno[:,:6]
+        dr_new_pv = output_dr[:,:6] - Inno[:,:6]
 
 
         if self.idx_feedback_type == 'pvb':
-            est_C_b_e_new = est_C_b_e_old
-            self.dr_new = torch.cat([dr_new_pv, dr_temp[:,6:9], est_C_b_e_old.reshape(est_C_b_e_old.shape[0],9)])
+            est_C_b_e_new = output_dr[:,9:18]
+            self.dr_new = torch.cat([dr_new_pv, output_dr[:,6:9], est_C_b_e_new.reshape(est_C_b_e_new.shape[0],9)])
 
 
         if self.idx_feedback_type == 'pvab':
@@ -335,7 +337,7 @@ class LC_est_KG(nn.Module):
             # skew_att_list.append
 
 
-            est_C_b_e_new = (torch.eye(3).to(self.dev) - skew_att) @ est_C_b_e_old
+            est_C_b_e_new = (torch.eye(3).to(self.dev) - skew_att) @ output_dr[:,9:18].reshape(output_dr.shape[0],3,3)
 
 
             dr_new_att = functions.CTM_to_euler_batched(est_C_b_e_new.transpose(1, 2))
@@ -347,13 +349,13 @@ class LC_est_KG(nn.Module):
         self.x_old_old = Inno
         self.x_pred_old_previous = self.x_pred_old
         self.meas_old = meas
-        self.imu_old = imu[-1]
-        self.prev_out_old = prev_out
+        # self.imu_old = imu[-1]
+        # self.prev_out_old = prev_out
 
 
 
 
-        return self.dr_new, est_C_b_e_new, imu_error, KGain
+        return self.dr_new, imu_error, KGain
 
 
 
