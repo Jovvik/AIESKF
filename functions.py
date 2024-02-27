@@ -52,6 +52,7 @@ if torch.cuda.is_available():
     dev = torch.device("cuda")  # cuda:1 cuda:2....etc.
 else:
     dev = torch.device("cpu")
+use_wandb = False
 
 def euler_to_CTM(eul):
     # Euler_to_CTM - Converts a set of Euler angles to the corresponding

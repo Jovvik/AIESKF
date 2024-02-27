@@ -9,7 +9,12 @@
 #
 #
 # -----------------------------------------------------------------------------
+import random
+
 import torch
+from functions import use_wandb
+if use_wandb:
+    import wandb
 
 import functions
 
@@ -89,16 +94,22 @@ class Pipeline_LC:
 
             if epoch < 20:
                 timesteps = 30 * Fs - 1
-            # elif epoch < 40 :
-            #     timesteps = 60 * Fs - 1
+                outage_s = timesteps
+                outage_e = timesteps
+            elif epoch < 40:
+                timesteps = int(30 * Fs - 1 + (epoch - 20) / (40 - 20) * (y.shape[1] - 1 - 30 * Fs + 1))
+                outage_s = timesteps
+                outage_e = timesteps
             else:
                 timesteps = y.shape[1] - 1 # skip first one
+                outage_s = random.randint(10 * Fs, timesteps - 10 * Fs)
+                outage_e = outage_s + 10 * Fs
             # timesteps = y.shape[1] - 1
             for t in range(timesteps):
                 # with torch.no_grad():
                 output_dr = functions.dead_reckoning_ecef_batched(Fs, output_all[:, t], imu_meas[:, t], imu_error)
 
-                if (t + 1) % (self.gnssgap * Fs) == 0:
+                if (t + 1) % (self.gnssgap * Fs) == 0 and (t < outage_s or t > outage_e):
                     output_nn, imu_error, _ = self.net(
                         X[:, int((t + 1) / Fs)],
                         output_dr,
@@ -138,6 +149,8 @@ class Pipeline_LC:
 
             print(f"Epoch {epoch}")
             print(f"MSE Loss in train data set is {float(loss_mean_train):f}")
+            if use_wandb:
+                wandb.log({"Train Loss": float(loss_mean_train)})
          
         print(f"IMU error is {imu_error}")
 

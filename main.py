@@ -16,7 +16,10 @@ import Pipeline
 import os
 import scipy.io as scio
 import functions
+use_wandb = functions.use_wandb
 from datetime import datetime
+if use_wandb:
+    import wandb
 # from Intergration import Deadreckoning, Error_state, Error_state_8, Error_state_8_LS
 # %matplotlib widget
 
@@ -55,7 +58,7 @@ currt_folder = os.getcwd()
 #GIVE_real_data_0316_60s
 # simudata_Errorfree_3d_10hz
 
-data_paths = ['/home/lis4hi/data/' + 'Simu_MEMS_cut.csv',
+data_paths = [os.path.join(currt_folder, 'data', 'Simu_MEMS_cut.csv')
               ]
 
 indx_MB = True
@@ -151,10 +154,14 @@ scheduler = "cosine_annealing 300"
 opti_type = 'Adam' 
 # opti_type = 'SGD'
 
-
-
-
-
+if use_wandb:
+    wandb.init(project='aieskf-simu',
+               config={'learning_rate': idx_learning_rate, 'batch_size': idx_train_batch_size, 'scheduler': scheduler,
+                       'optimizer': opti_type, 'epochs': idx_num_epochs, 'weight_decay': idx_weight_decay,
+                       'recurrent_kind': recurrent_kind, 'lossweight_coeff': idx_lossweight_coeff,
+                       'feedback_type': idx_feedback_type, 'imu_scale': idx_imu_scale, 'att_scale': idx_att_scale,
+                       'dropout_rate': droupout_rate, 'hidden_dim': hidden_dim, 'linearfc2_dim': linearfc2_dim,
+                       'linearfc3_dim': linearfc3_dim, 'n_layers': n_layers, 'dataset': "Simu_MEMS_cut"})
 
 # =============================================================================
 
@@ -684,6 +691,8 @@ losses = {
 print("Losses:")
 pprint(losses)
 
+if use_wandb:
+    wandb.log({"Position loss": losses["position"]["lstm"], "Velocity loss": losses["velocity"]["lstm"]})
 
 # =============================================================================
 #                                     Model Based
